@@ -1,0 +1,20 @@
+# Face -> Web Search -> Blockchain Verification
+# Python 3.11+ recommended.
+
+# --- Phase 1: face detection + embedding ---
+numpy>=1.24,<2.0            # pinned <2.0 for onnxruntime/insightface compatibility
+opencv-python>=4.8
+onnxruntime>=1.16           # CPU inference (GPU: swap for onnxruntime-gpu later)
+insightface>=0.7.3
+python-dotenv>=1.0
+
+# --- Phase 2: reverse image search (SerpApi Google Lens) ---
+requests>=2.31
+google-search-results>=2.4  # official SerpApi Python client
+beautifulsoup4>=4.12        # used sparingly, only where appropriate
+
+# --- Phase 4: blockchain (Ethereum Sepolia) ---
+web3>=6.11
+
+# --- Dev / tests ---
+pytest>=7.4
