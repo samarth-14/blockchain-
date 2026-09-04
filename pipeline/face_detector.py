@@ -40,25 +40,23 @@ import numpy as np
 
 @contextlib.contextmanager
 def _suppress_stdout():
-    """Silence chatty C/library stdout (InsightFace prints model info there).
+    """Temporarily suppress Python-level stdout.
 
-    Redirects file descriptor 1 to /dev/null so both Python-level prints and
-    native library writes are hidden, keeping our clean CLI stages readable.
-    stderr is left untouched so real warnings/errors still surface.
+    InsightFace can print model-download/provider messages during its first
+    initialization. Using a Python-level redirect is safer on Windows than
+    swapping the underlying stdout file descriptor with os.dup2(), which can
+    leave PowerShell/Python's stdout stream in an invalid state.
     """
-    sys.stdout.flush()
-    saved_fd = os.dup(1)
-    devnull = os.open(os.devnull, os.O_WRONLY)
+    saved_stdout = sys.stdout
     try:
-        os.dup2(devnull, 1)
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
         yield
     finally:
-        sys.stdout.flush()
-        os.dup2(saved_fd, 1)
-        os.close(devnull)
-        os.close(saved_fd)
-
-
+        try:
+            sys.stdout.close()
+        except Exception:
+            pass
+        sys.stdout = saved_stdout
 # --- Errors --------------------------------------------------------------------
 
 class FaceDetectionError(Exception):
