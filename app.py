@@ -1,17 +1,19 @@
-
-"""Face -> Web Search -> Candidate Verification | CLI entry point.
+"""Face -> Web Search -> Candidate Verification -> Fingerprint -> Blockchain.
 
 NON-COMMERCIAL research / demo. Intended ONLY for a consenting participant or a
 controlled test image. Do not use for surveillance, mass identification, or
 building dossiers on people.
 
-Current scope (Phase 1 + 2 + 3):
-  [1/4] load image
-  -> [2/4] detect single face + embedding
-  -> [3/4] genuine reverse image search via SerpApi Google Lens
-  -> [4/4] download candidate images + verify candidate faces.
+Phase 1 + 2 + 3:
+  [1] load image
+  [2] detect single face + embedding
+  [3] reverse image search via SerpApi Google Lens
+  [4] download candidate images + verify candidate faces
 
-Phase 4 (fingerprint + blockchain) is intentionally not called yet.
+Phase 4:
+  [5] create SHA-256 fingerprint of the Phase 3 verification data
+  [6] record fingerprint on Ethereum Sepolia
+  [7] retrieve fingerprint and verify it
 
 Usage:
     python app.py --image data/input/test.jpg
@@ -31,6 +33,12 @@ from utils import logger
 from pipeline import face_detector as fd
 from pipeline import reverse_search as rs
 from pipeline import candidate_matcher as cm
+from pipeline.fingerprint import sha256_fingerprint
+from pipeline.blockchain import (
+    record_fingerprint,
+    retrieve_and_verify,
+    get_web3,
+)
 
 
 log = logger.get_logger()
@@ -41,7 +49,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog="app.py",
         description=(
             "Detect a single face, reverse-search the image with "
-            "SerpApi Google Lens, then verify returned candidate images."
+            "SerpApi Google Lens, verify returned candidate images, "
+            "fingerprint the results, and record the fingerprint on "
+            "Ethereum Sepolia."
         ),
     )
 
@@ -164,20 +174,26 @@ def run(args: argparse.Namespace) -> int:
     else:
         crop_out = config.results_dir / f"{image_path.stem}_face.jpg"
 
-    # ---- Stage 1: load image -------------------------------------------------
-    logger.stage(1, 4, f"Loading image  ({image_path})")
+    # -------------------------------------------------------------------------
+    # Stage 1: load image
+    # -------------------------------------------------------------------------
+    logger.stage(1, 5, f"Loading image  ({image_path})")
 
     try:
         image = fd.load_image(image_path)
+
     except fd.ImageLoadError as e:
         logger.failure(str(e))
         return 2
 
     h, w = image.shape[:2]
+
     logger.info(f"Image loaded: {w}x{h} px")
 
-    # ---- Stage 2: detect face + embedding -----------------------------------
-    logger.stage(2, 4, "Detecting face")
+    # -------------------------------------------------------------------------
+    # Stage 2: detect face + embedding
+    # -------------------------------------------------------------------------
+    logger.stage(2, 5, "Detecting face")
 
     try:
         result = fd.analyze_image(
@@ -188,6 +204,7 @@ def run(args: argparse.Namespace) -> int:
             det_threshold=args.det_threshold,
             use_cpu=config.use_cpu,
         )
+
     except fd.NoFaceError:
         logger.failure(
             "No face detected. "
@@ -196,34 +213,44 @@ def run(args: argparse.Namespace) -> int:
         return 3
 
     except fd.MultipleFacesError as e:
-        logger.failure(f"{e}  (the MVP accepts exactly one face)")
+        logger.failure(
+            f"{e}  (the MVP accepts exactly one face)"
+        )
         return 4
 
     except fd.FaceDetectionError as e:
-        logger.failure(f"Face stage failed: {e}")
+        logger.failure(
+            f"Face stage failed: {e}"
+        )
         return 5
 
     logger.success("Face detected")
+
     logger.info(
         f"Bounding box (x1,y1,x2,y2): {result.bbox}"
     )
+
     logger.info(
         f"Detector confidence: {result.det_score:.4f}"
     )
+
     logger.success("Embedding generated")
+
     logger.info(
         f"Embedding: {result.embedding_preview()}"
     )
 
     if result.crop_path:
-        logger.info(f"Face crop saved: {result.crop_path}")
+        logger.info(
+            f"Face crop saved: {result.crop_path}"
+        )
 
-    # ---- Stage 3: reverse image search --------------------------------------
-    logger.stage(3, 4, "Searching web with Google Lens")
+    # -------------------------------------------------------------------------
+    # Stage 3: reverse image search
+    # -------------------------------------------------------------------------
+    logger.stage(3, 5, "Searching web with Google Lens")
 
     try:
-        # Search with the FULL input image. This preserves context and tends
-        # to produce more useful web candidates than a tight face crop.
         search = rs.search_image(
             image_path=image_path,
             api_key=config.serpapi_key,
@@ -235,7 +262,9 @@ def run(args: argparse.Namespace) -> int:
         return 6
 
     except rs.InvalidAPIKeyError as e:
-        logger.failure(f"SerpApi rejected the API key: {e}")
+        logger.failure(
+            f"SerpApi rejected the API key: {e}"
+        )
         return 7
 
     except rs.RateLimitError as e:
@@ -276,26 +305,38 @@ def run(args: argparse.Namespace) -> int:
         max_show=args.max_show,
     )
 
+    # -------------------------------------------------------------------------
+    # No candidates
+    # -------------------------------------------------------------------------
     if search.count == 0:
         print()
+
         logger.info(
             "No web candidates returned. "
             "Candidate verification skipped."
         )
-        _write_verification_results(
+
+        verification_path = _write_verification_results(
             image_path=image_path,
             search=search,
             matches=[],
             max_candidates=args.max_candidates,
         )
-        print()
-        logger.success("Phase 3 complete.")
-        return 0
 
-    # ---- Stage 4: candidate verification ------------------------------------
+        logger.info(
+            f"Verification results written to: {verification_path}"
+        )
+
+        # Even with zero candidates, we fingerprint the resulting
+        # Phase 3 output so that the pipeline remains deterministic.
+        return _run_phase4(verification_path)
+
+    # -------------------------------------------------------------------------
+    # Stage 4: candidate verification
+    # -------------------------------------------------------------------------
     logger.stage(
         4,
-        4,
+        5,
         f"Verifying candidate faces (max {args.max_candidates})",
     )
 
@@ -332,10 +373,143 @@ def run(args: argparse.Namespace) -> int:
         f"Verification results written to: {verification_path}"
     )
 
+    # -------------------------------------------------------------------------
+    # Stage 5: Phase 4
+    # -------------------------------------------------------------------------
+    return _run_phase4(verification_path)
+
+
+def _run_phase4(verification_path: Path) -> int:
+    """Create fingerprint, record it on Sepolia, then verify it."""
+
+    print()
+    print("=" * 50)
+    print("PHASE 4 — FINGERPRINT + BLOCKCHAIN")
+    print("=" * 50)
+    print()
+
+    # ---------------------------------------------------------------------
+    # Step 1: fingerprint
+    # ---------------------------------------------------------------------
+    logger.stage(
+        5,
+        5,
+        "Creating SHA-256 fingerprint",
+    )
+
+    try:
+        with verification_path.open(
+            "r",
+            encoding="utf-8",
+        ) as f:
+            verification_data = json.load(f)
+
+        fingerprint = sha256_fingerprint(
+            verification_data
+        )
+
+    except Exception as e:
+        logger.failure(
+            f"Fingerprint creation failed: {e}"
+        )
+        return 17
+
+    logger.success(
+        "Fingerprint created"
+    )
+
+    logger.info(
+        f"SHA-256: {fingerprint}"
+    )
+
+    # ---------------------------------------------------------------------
+    # Step 2: record fingerprint on Sepolia
+    # ---------------------------------------------------------------------
+    logger.stage(
+        5,
+        5,
+        "Recording fingerprint on Ethereum Sepolia",
+    )
+
+    try:
+        tx_hash = record_fingerprint(
+            fingerprint
+        )
+
+    except Exception as e:
+        logger.failure(
+            f"Blockchain recording failed: {e}"
+        )
+        return 18
+
+    logger.success(
+        "Fingerprint transaction sent"
+    )
+
+    logger.info(
+        f"Transaction hash: {tx_hash}"
+    )
+
+    # ---------------------------------------------------------------------
+    # Step 3: wait for confirmation
+    # ---------------------------------------------------------------------
+    logger.info(
+        "Waiting for blockchain confirmation..."
+    )
+
+    try:
+        w3 = get_web3()
+
+        receipt = w3.eth.wait_for_transaction_receipt(
+            tx_hash
+        )
+
+    except Exception as e:
+        logger.failure(
+            f"Transaction confirmation failed: {e}"
+        )
+        return 19
+
+    logger.success(
+        "Transaction confirmed"
+    )
+
+    logger.info(
+        f"Block number: {receipt['blockNumber']}"
+    )
+
+    # ---------------------------------------------------------------------
+    # Step 4: retrieve + verify
+    # ---------------------------------------------------------------------
+    logger.info(
+        "Retrieving fingerprint from blockchain..."
+    )
+
+    try:
+        blockchain_result = retrieve_and_verify(
+            tx_hash,
+            fingerprint,
+        )
+
+    except Exception as e:
+        logger.failure(
+            f"Blockchain verification failed: {e}"
+        )
+        return 20
+
+    if blockchain_result == "VERIFIED":
+        logger.success(
+            "BLOCKCHAIN VERIFICATION: VERIFIED"
+        )
+    else:
+        logger.failure(
+            "BLOCKCHAIN VERIFICATION: TAMPERED"
+        )
+        return 21
+
     print()
     logger.success(
-        "Phase 3 complete. "
-        "Fingerprinting and blockchain are not run yet."
+        "Phase 4 complete."
     )
 
     return 0
@@ -347,9 +521,16 @@ def _write_debug_search(
     """Persist raw SerpApi JSON with credentials scrubbed."""
 
     out = config.results_dir / "lens_response.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
 
-    with out.open("w", encoding="utf-8") as f:
+    out.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    with out.open(
+        "w",
+        encoding="utf-8",
+    ) as f:
         json.dump(
             rs.sanitize_raw(search.raw_response),
             f,
@@ -374,7 +555,9 @@ def _print_search_results(
     print("=" * 50)
     print()
 
-    logger.success("Search completed")
+    logger.success(
+        "Search completed"
+    )
 
     if search.image_id:
         logger.info(
@@ -393,6 +576,7 @@ def _print_search_results(
         return
 
     for candidate in search.candidates[:max_show]:
+
         idx = (
             candidate.position
             if candidate.position is not None
@@ -400,14 +584,17 @@ def _print_search_results(
         )
 
         print()
+
         print(
             f"[{idx}] "
             f"{candidate.title or '(no title)'}"
         )
+
         print(
             f"    Source: "
             f"{candidate.source or candidate.domain or '(unknown)'}"
         )
+
         print(
             f"    URL:    "
             f"{candidate.url or '(none)'}"
@@ -420,6 +607,7 @@ def _print_search_results(
 
     if remaining > 0:
         print()
+
         logger.info(
             f"... and {remaining} more "
             f"(use --max-show to see more)."
@@ -438,10 +626,13 @@ def _print_verification_results(
 
     if not matches:
         print()
-        logger.info("No candidates were verified.")
+        logger.info(
+            "No candidates were verified."
+        )
         return
 
-    for index, match in enumerate(matches, start=1):
+    for match in matches:
+
         candidate = match.candidate
 
         position = (
@@ -451,10 +642,12 @@ def _print_verification_results(
         )
 
         print()
+
         print(
             f"[{position}] "
             f"{candidate.title or '(no title)'}"
         )
+
         print(
             f"    Status:       {match.status}"
         )
@@ -507,10 +700,14 @@ def _write_verification_results(
     matches: list[cm.CandidateMatch],
     max_candidates: int,
 ) -> Path:
-    """Write structured Phase 3 output to data/results/verification.json."""
+    """Write structured Phase 3 output."""
 
     out = config.results_dir / "verification.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
+
+    out.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     payload = {
         "phase": 3,
@@ -533,12 +730,15 @@ def _write_verification_results(
             ],
         },
         "next_phase": {
-            "fingerprint": False,
-            "blockchain": False,
+            "fingerprint": True,
+            "blockchain": True,
         },
     }
 
-    with out.open("w", encoding="utf-8") as f:
+    with out.open(
+        "w",
+        encoding="utf-8",
+    ) as f:
         json.dump(
             payload,
             f,
@@ -554,8 +754,11 @@ def main(argv=None) -> int:
 
     try:
         return run(args)
+
     except KeyboardInterrupt:
-        logger.failure("Interrupted.")
+        logger.failure(
+            "Interrupted."
+        )
         return 130
 
 
