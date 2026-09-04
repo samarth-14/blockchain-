@@ -1,18 +1,26 @@
-"""Canonicalize discovered metadata and produce a SHA-256 fingerprint.
-
-PHASE 4 — NOT IMPLEMENTED YET.
-
-Placeholder. When implemented it will canonicalize the matched post's metadata
-(stable key order, normalized encoding) and return its SHA-256 hex digest, so
-the same input always yields the same fingerprint for on-chain comparison.
-"""
+"""Canonicalize metadata and create a SHA-256 fingerprint."""
 
 from __future__ import annotations
 
+import hashlib
+import json
+from typing import Any
 
-def canonicalize(*args, **kwargs):
-    raise NotImplementedError("fingerprint is Phase 4 and not implemented yet.")
+
+def canonicalize(metadata: dict[str, Any]) -> str:
+    """Convert metadata into a deterministic JSON string."""
+    return json.dumps(
+        metadata,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
 
 
-def sha256_fingerprint(*args, **kwargs):
-    raise NotImplementedError("fingerprint is Phase 4 and not implemented yet.")
+def sha256_fingerprint(metadata: dict[str, Any]) -> str:
+    """Return the SHA-256 fingerprint of the canonical metadata."""
+    canonical = canonicalize(metadata)
+
+    return hashlib.sha256(
+        canonical.encode("utf-8")
+    ).hexdigest()
