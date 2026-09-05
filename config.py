@@ -54,9 +54,17 @@ class Config:
     )
     serpapi_engine: str = field(default_factory=lambda: os.getenv("SERPAPI_ENGINE", "google_lens"))
 
-    # --- Blockchain (Phase 4, not used yet) ---
-    eth_rpc_url: str = field(default_factory=lambda: os.getenv("ETH_RPC_URL", ""))
-    eth_private_key: str = field(default_factory=lambda: os.getenv("ETH_PRIVATE_KEY", ""))
+    # --- Blockchain (Phase 4) ---
+    # Backward-compatible names: prefer ETH_* if present, else fall back to the
+    # existing SEPOLIA_RPC_URL / PRIVATE_KEY names. Never logged or written out.
+    # WALLET_ADDRESS is intentionally NOT read here — the sender address is
+    # derived from the private key in pipeline/blockchain.py.
+    eth_rpc_url: str = field(
+        default_factory=lambda: os.getenv("ETH_RPC_URL") or os.getenv("SEPOLIA_RPC_URL", "")
+    )
+    eth_private_key: str = field(
+        default_factory=lambda: os.getenv("ETH_PRIVATE_KEY") or os.getenv("PRIVATE_KEY", "")
+    )
     eth_chain_id: int = field(default_factory=lambda: int(os.getenv("ETH_CHAIN_ID", "11155111")))  # Sepolia
 
     def ensure_dirs(self) -> None:

@@ -1,6 +1,6 @@
 # Face → Web Search → Blockchain Verification
 
-**Phase 1 ✅ Complete | Phase 2 ✅ Complete | Phase 3 ⏳ | Phase 4 ⏳ | Phase 5 ⏳**
+**Phase 1 ✅ Complete | Phase 2 ✅ Complete | Phase 3 ✅ Complete | Phase 4 ✅ Complete | Phase 5 ⏳**
 
 A **non-commercial hackathon / research demonstration** pipeline. It takes a
 single face image, detects and embeds the face locally (InsightFace), then runs a
@@ -13,11 +13,11 @@ image — or visually similar images — appear on the public web.
 > login-protected/private accounts, or building dossiers on people. Only public
 > web content and a controlled test image are in scope.
 
-> **What Phase 2 does — and does not — do.** Phase 2 currently only *discovers*
-> candidate web/search results for an image. It does **not** yet verify that a
-> discovered page contains the **same person**. Confirming that a candidate is
-> the same individual (candidate face detection + similarity comparison) is
-> Phase 3, which is **not started**.
+> **Pipeline scope.** Phase 2 *discovers* candidate web/search results for an
+> image. Phase 3 then verifies whether a discovered page shows the **same
+> person** (candidate face detection + similarity comparison). Phase 4
+> fingerprints the verified evidence (SHA-256) and anchors it on the Ethereum
+> **Sepolia test network**, then re-reads and re-verifies it on-chain.
 
 ---
 
@@ -72,31 +72,36 @@ later phases and is **not implemented yet**.
 - Proper API / network / rate-limit / error handling with distinct exit codes
 - **19 Phase 2 mocked / unit tests** (HTTP layer mocked — no quota used)
 
-**Total test suite: 30 tests passing.**
+**Total test suite: 94 tests passing** (Phase 1 + 2 + Phase 3 candidate
+matching + Phase 4 fingerprint/blockchain). Phase 4 blockchain tests are fully
+mocked — `pytest` never sends a transaction or needs a funded wallet.
 
-### Phase 3 — Candidate face verification ⏳ **Not started**
+### Phase 3 — Candidate face verification ✅ **Complete**
 
 - Candidate image retrieval
-- Candidate face detection
-- Candidate embedding generation
-- Face similarity comparison
-- Candidate ranking
-- Best-match verification
+- Candidate face detection + embedding
+- Face similarity comparison (cosine) with match / uncertain / no-match status
+- Best-match verification, structured output to `data/results/verification.json`
 
-### Phase 4 — Blockchain anchoring ⏳ **Not started**
+### Phase 4 — Blockchain anchoring ✅ **Complete**
 
-- SHA-256 fingerprinting
-- Ethereum Sepolia transaction
-- On-chain record
-- Blockchain re-verification
+- Stable **canonical evidence record** built from the Phase 3 result
+  (title, source, source URL, candidate image URL, best similarity,
+  verification status, input-image SHA-256) — mutable/raw API data excluded
+- Deterministic serialization → **SHA-256 fingerprint of the canonical record**
+  (not of the raw `verification.json`)
+- Ethereum **Sepolia** transaction storing the fingerprint in calldata (web3.py)
+- Transaction receipt wait + tx hash captured
+- **True re-verification**: independently rebuilds the canonical evidence,
+  recomputes the SHA-256, reads the on-chain fingerprint, and compares →
+  `VERIFIED` / `TAMPERED`
+- Re-verifiable proof persisted to `data/results/blockchain_proof.json`
+  (no secrets)
 
 ### Phase 5 — Polish ⏳ **Not started**
 
 - Final CLI / demo polish
 - Final documentation / demo recording preparation
-
-> Phase 3–4 modules exist only as placeholders that raise `NotImplementedError`.
-> Nothing in this README should be read as a claim that Phase 3 or Phase 4 works.
 
 ---
 
@@ -123,11 +128,31 @@ third-party service; the bytes go only to SerpApi. The image-submission strategy
 lives in `pipeline/reverse_search.py` (`search_image(image_path=...)` uploads;
 `search_image(image_url=...)` passes a public URL straight through).
 
-**Future phases (not implemented):** Phase 3 will consume the returned
-`Candidate` objects — downloading publicly accessible candidate images, detecting
-and embedding their faces, and comparing them against the input embedding to
-decide whether the same person appears. Phase 4 will fingerprint a verified
-result (SHA-256) and anchor it on the Ethereum Sepolia testnet.
+**Phase 3 + 4 (implemented).** Phase 3 consumes the returned `Candidate`
+objects — downloading publicly accessible candidate images, detecting and
+embedding their faces, and comparing them against the input embedding to decide
+whether the same person appears. Phase 4 builds a canonical evidence record from
+that verified result, fingerprints it (SHA-256), anchors the fingerprint on the
+Ethereum **Sepolia** test network, then re-reads and re-verifies it on-chain.
+
+### Phase 4 proof flow
+
+```
+Phase 3 verification.json
+  → build canonical evidence record (stable fields only)
+  → deterministic JSON (sorted keys, compact) → SHA-256 fingerprint
+  → Sepolia transaction (fingerprint in calldata) → wait for receipt → tx hash
+  → read fingerprint back from the transaction
+  → independently rebuild canonical evidence + recompute SHA-256
+  → compare recomputed hash vs on-chain fingerprint
+  → VERIFIED / TAMPERED   (proof saved to data/results/blockchain_proof.json)
+```
+
+Re-verify a saved proof later, without sending a new transaction:
+
+```bash
+./.venv/bin/python app.py --verify-proof data/results/blockchain_proof.json
+```
 
 ---
 
@@ -142,9 +167,9 @@ face-web-blockchain/
 ├── pipeline/
 │   ├── face_detector.py    # ✅ Phase 1: InsightFace detection + embedding
 │   ├── reverse_search.py   # ✅ Phase 2: SerpApi Google Lens search
-│   ├── candidate_matcher.py# ⏳ Phase 3: candidate face verification
-│   ├── fingerprint.py      # ⏳ Phase 4: SHA-256 fingerprinting
-│   └── blockchain.py       # ⏳ Phase 4: Ethereum Sepolia
+│   ├── candidate_matcher.py# ✅ Phase 3: candidate face verification
+│   ├── fingerprint.py      # ✅ Phase 4: canonical evidence + SHA-256
+│   └── blockchain.py       # ✅ Phase 4: Ethereum Sepolia record/retrieve
 ├── utils/
 │   ├── logger.py           # stage/success/failure CLI helpers
 │   └── http.py             # shared HTTP/session utilities
@@ -206,14 +231,22 @@ The key is read via `config.py` / `python-dotenv`. It is **never printed** and
 **never written** to `data/results/lens_response.json` (that file is scrubbed of
 any `api_key` field before writing).
 
-**FUTURE — Phase 4 (blockchain), NOT currently required:**
+**Phase 4 (blockchain) — required for the on-chain step:**
 
 ```env
-# Not used by Phase 1 or Phase 2. Present only for the future Phase 4 work.
-ETH_RPC_URL=
+ETH_RPC_URL=            # e.g. https://sepolia.infura.io/v3/<project-id>
 ETH_PRIVATE_KEY=        # throwaway test key ONLY — never a real-funds key
-ETH_CHAIN_ID=11155111   # Sepolia
+ETH_CHAIN_ID=11155111   # Sepolia test network
 ```
+
+- **Sepolia is a test network.** Use a **throwaway** wallet funded only with
+  Sepolia test ETH (from a public faucet) — never a real-funds key.
+- The sender address is **derived from `ETH_PRIVATE_KEY`** via web3.py; there is
+  no `WALLET_ADDRESS` variable.
+- `ETH_CHAIN_ID` must be `11155111`; Phase 4 validates the connected chain and
+  refuses to proceed on any other network.
+- The private key is read via `config.py` / `python-dotenv`. It is **never
+  printed**, never written to the proof file, and never committed.
 
 Do **not** put any real API key or private key in this README, in commits, or in
 any tracked file.
@@ -294,13 +327,14 @@ GOOGLE LENS SEARCH
 
 ## 9. Testing
 
-Run the full suite (30 tests):
+Run the full suite (94 tests):
 
 ```bash
 ./.venv/bin/python -m pytest -q
 ```
 
-Expected: **30 passed** (11 Phase 1 + 19 Phase 2).
+Expected: **94 passed**. Phase 4 blockchain tests are fully mocked, so
+`pytest -q` **never sends a Sepolia transaction and needs no funded wallet**.
 
 Phase 2 tests **mock the HTTP layer only** and never call the live API or use
 quota. The fast unit tests need no model download. An integration test runs the
@@ -360,8 +394,10 @@ different image (or a later run) will return different candidates.
 - **Discovery only.** Phase 2 discovers candidate web/search results. It does
   **not** verify that a discovered page contains the same person — that is
   Phase 3 (not started).
-- **No candidate matching / ranking / blockchain yet.** Phases 3–5 are not
-  implemented; their modules raise `NotImplementedError`.
+- **Phase 4 needs a funded Sepolia key for the live step.** The full on-chain
+  write requires `ETH_RPC_URL` + a throwaway `ETH_PRIVATE_KEY` with Sepolia test
+  ETH. Without it, Phases 1–3 still run; the blockchain step fails gracefully
+  with a clear error and a non-zero exit code.
 - **SerpApi free-plan quota.** The free plan allows roughly **100 searches per
   month**. Each `app.py` run performs **one** upload + **one** Lens search (which
   counts as one search against your quota). The client makes **no automatic
@@ -399,6 +435,6 @@ different image (or a later run) will return different candidates.
 |------:|-------------|-------|
 | **1** | Local face detection + 512-d embedding (InsightFace, CPU) | ✅ Complete |
 | **2** | Reverse image search via SerpApi Google Lens (discovery) | ✅ Complete |
-| **3** | Candidate retrieval, face detection/embedding, similarity match + ranking, best-match verification | ⏳ Not started |
-| **4** | SHA-256 fingerprint + Ethereum Sepolia record and re-verification | ⏳ Not started |
+| **3** | Candidate retrieval, face detection/embedding, similarity match + ranking, best-match verification | ✅ Complete |
+| **4** | Canonical evidence → SHA-256 fingerprint → Ethereum Sepolia record → on-chain re-verification | ✅ Complete |
 | **5** | Final CLI / demo polish and documentation / demo recording | ⏳ Not started |
