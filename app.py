@@ -388,6 +388,8 @@ def run(args: argparse.Namespace) -> int:
             search=search,
             matches=[],
             max_candidates=args.max_candidates,
+            match_threshold=args.match_threshold,
+            uncertain_threshold=args.uncertain_threshold,
             input_image_hash=input_image_hash,
         )
 
@@ -435,6 +437,8 @@ def run(args: argparse.Namespace) -> int:
         search=search,
         matches=matches,
         max_candidates=args.max_candidates,
+        match_threshold=args.match_threshold,
+        uncertain_threshold=args.uncertain_threshold,
         input_image_hash=input_image_hash,
     )
 
@@ -463,6 +467,86 @@ def _evidence_and_fingerprint(verification_data: dict) -> tuple[dict, str]:
     fingerprint = sha256_fingerprint(canonical)
     return canonical, fingerprint
 
+def _print_final_summary(
+    *,
+    verification_path: Path,
+    proof_path: Path,
+    fingerprint: str,
+    tx_hash: str,
+    blockchain_result: str,
+) -> None:
+    """Print a concise final summary for the CLI/demo."""
+
+    try:
+        verification_data = _load_verification(verification_path)
+        results = verification_data.get(
+            "verification",
+            {},
+        ).get(
+            "results",
+            [],
+        )
+
+        scored = [
+            result
+            for result in results
+            if result.get("best_similarity") is not None
+        ]
+
+        best = (
+            max(
+                scored,
+                key=lambda result: result["best_similarity"],
+            )
+            if scored
+            else None
+        )
+
+    except Exception:
+        best = None
+
+    print()
+    print("=" * 60)
+    print("DEMO COMPLETE")
+    print("=" * 60)
+
+    print()
+    print("Pipeline")
+    print("  ✓ Face detected")
+    print("  ✓ Google Lens search completed")
+    print("  ✓ Candidate verification completed")
+    print("  ✓ Evidence fingerprint created")
+    print(f"  ✓ Blockchain proof: {blockchain_result}")
+
+    if best is not None:
+        print()
+        print("Best candidate")
+        print(
+            f"  Title:      "
+            f"{best.get('title') or '(no title)'}"
+        )
+        print(
+            f"  Similarity: "
+            f"{best['best_similarity']:.4f}"
+        )
+        print(
+            f"  Status:     "
+            f"{best.get('status', '(unknown)')}"
+        )
+        print(
+            f"  Source:     "
+            f"{best.get('source') or '(unknown)'}"
+        )
+
+    print()
+    print("Proof")
+    print(f"  SHA-256:    {fingerprint}")
+    print(f"  TX hash:    {tx_hash}")
+    print(f"  Verification: {proof_path}")
+    print(f"  Candidates:   {verification_path}")
+
+    print()
+    print("=" * 60)
 
 def _run_phase4(verification_path: Path) -> int:
     """Canonical evidence → SHA-256 → Sepolia write → read → recompute → verify."""
@@ -476,7 +560,7 @@ def _run_phase4(verification_path: Path) -> int:
     # ---------------------------------------------------------------------
     # Step 1: canonical evidence + fingerprint
     # ---------------------------------------------------------------------
-    logger.stage(5, 5, "Building canonical evidence + SHA-256 fingerprint")
+    logger.info("  Step 1/5 — Building canonical evidence + SHA-256 fingerprint")
 
     try:
         verification_data = _load_verification(verification_path)
@@ -491,7 +575,7 @@ def _run_phase4(verification_path: Path) -> int:
     # ---------------------------------------------------------------------
     # Step 2: record fingerprint on Sepolia
     # ---------------------------------------------------------------------
-    logger.stage(5, 5, "Recording fingerprint on Ethereum Sepolia")
+    logger.info("  Step 2/5 — Recording fingerprint on Ethereum Sepolia")
 
     try:
         tx_hash = record_fingerprint(fingerprint)
@@ -567,8 +651,14 @@ def _run_phase4(verification_path: Path) -> int:
         logger.failure("BLOCKCHAIN VERIFICATION: TAMPERED")
         return 21
 
-    print()
-    logger.success("Phase 4 complete.")
+    _print_final_summary(
+        verification_path=verification_path,
+        proof_path=proof_path,
+        fingerprint=fingerprint,
+        tx_hash=tx_hash,
+        blockchain_result=blockchain_result,
+    )
+
     return 0
 
 
@@ -927,12 +1017,15 @@ def _print_verification_results(
         )
 
 
+
 def _write_verification_results(
     *,
     image_path: Path,
     search: "rs.ReverseSearchResult",
     matches: list[cm.CandidateMatch],
     max_candidates: int,
+    match_threshold: float,
+    uncertain_threshold: float,
     input_image_hash: str | None = None,
 ) -> Path:
     """Write structured Phase 3 output.
@@ -963,8 +1056,8 @@ def _write_verification_results(
         },
         "verification": {
             "max_candidates": max_candidates,
-            "match_threshold": cm.MATCH_THRESHOLD,
-            "uncertain_threshold": cm.UNCERTAIN_THRESHOLD,
+            "match_threshold": match_threshold,
+            "uncertain_threshold": uncertain_threshold,
             "results": [
                 match.to_dict()
                 for match in matches
